@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 
-	"github.com/gopub/wine"
+	"github.com/golangpub/wine"
 )
 
 func main() {

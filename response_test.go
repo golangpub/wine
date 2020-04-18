@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golangpub/wine"
+	"github.com/golangpub/wine/mime"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
-	"github.com/gopub/wine"
-	"github.com/gopub/wine/mime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

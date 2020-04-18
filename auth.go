@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gopub/log"
+	"github.com/golangpub/log"
 )
 
 // NewBasicAuthHandler returns a basic auth interceptor

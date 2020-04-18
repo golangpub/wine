@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/gopub/gox/v2"
-	"github.com/gopub/types"
-	"github.com/gopub/wine"
-	"github.com/gopub/wine/mime"
+	"github.com/golangpub/gox/v2"
+	"github.com/golangpub/types"
+	"github.com/golangpub/wine"
+	"github.com/golangpub/wine/mime"
 )
 
 // ParseParams unmarshal request body into params. Only support JSON type for now.

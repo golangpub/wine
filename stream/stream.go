@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gopub/wine"
+	"github.com/golangpub/wine"
 
-	"github.com/gopub/log"
+	"github.com/golangpub/log"
 )
 
 const (

@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/gopub/types"
-	"github.com/gopub/wine/mime"
+	"github.com/golangpub/types"
+	"github.com/golangpub/wine/mime"
 )
 
 func ReadRequest(req *http.Request, maxMemory types.ByteUnit) (types.M, []byte, error) {

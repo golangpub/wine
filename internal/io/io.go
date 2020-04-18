@@ -1,6 +1,6 @@
 package io
 
-import "github.com/gopub/log"
+import "github.com/golangpub/log"
 
 var logger = log.Default()
 

@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gopub/types"
+	"github.com/golangpub/types"
 
-	"github.com/gopub/wine/internal/io"
-	"github.com/gopub/wine/internal/path"
-	"github.com/gopub/wine/mime"
+	"github.com/golangpub/wine/internal/io"
+	"github.com/golangpub/wine/internal/path"
+	"github.com/golangpub/wine/mime"
 )
 
 // Request is a wrapper of http.Request, aims to provide more convenient interface

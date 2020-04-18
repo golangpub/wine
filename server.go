@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golangpub/environ"
+	"github.com/golangpub/log"
+	"github.com/golangpub/types"
+	"github.com/golangpub/wine/internal/io"
+	"github.com/golangpub/wine/internal/template"
 	"github.com/google/uuid"
-	"github.com/gopub/environ"
-	"github.com/gopub/log"
-	"github.com/gopub/types"
-	"github.com/gopub/wine/internal/io"
-	"github.com/gopub/wine/internal/template"
 )
 
 const (

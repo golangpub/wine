@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gopub/types"
+	"github.com/golangpub/types"
 
-	"github.com/gopub/log"
-	"github.com/gopub/wine/internal/resource"
-	"github.com/gopub/wine/mime"
+	"github.com/golangpub/log"
+	"github.com/golangpub/wine/internal/resource"
+	"github.com/golangpub/wine/mime"
 )
 
 // Handler defines interface for interceptor

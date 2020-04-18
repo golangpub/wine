@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/gopub/wine"
-	"github.com/gopub/wine/stream"
+	"github.com/golangpub/wine"
+	"github.com/golangpub/wine/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

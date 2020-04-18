@@ -4,9 +4,9 @@ import (
 	"container/list"
 	"strings"
 
-	"github.com/gopub/types"
+	"github.com/golangpub/types"
 
-	"github.com/gopub/log"
+	"github.com/golangpub/log"
 )
 
 type NodeType int

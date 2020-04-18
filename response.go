@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gopub/log"
-	"github.com/gopub/wine/mime"
+	"github.com/golangpub/log"
+	"github.com/golangpub/wine/mime"
 )
 
 // Responder interface is used by Wine server to write response to the client

@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/gopub/wine"
-	"github.com/gopub/wine/mime"
+	"github.com/golangpub/wine"
+	"github.com/golangpub/wine/mime"
 	"github.com/stretchr/testify/require"
 )
 

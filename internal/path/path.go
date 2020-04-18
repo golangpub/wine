@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/gopub/log"
+	"github.com/golangpub/log"
 )
 
 var logger = log.Default()

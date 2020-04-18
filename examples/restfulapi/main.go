@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/gopub/wine"
+	"github.com/golangpub/wine"
 )
 
 func main() {

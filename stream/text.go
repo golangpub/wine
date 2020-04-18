@@ -7,12 +7,12 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/gopub/types"
+	"github.com/golangpub/types"
 
-	"github.com/gopub/log"
-	"github.com/gopub/wine"
-	"github.com/gopub/wine/api"
-	"github.com/gopub/wine/mime"
+	"github.com/golangpub/log"
+	"github.com/golangpub/wine"
+	"github.com/golangpub/wine/api"
+	"github.com/golangpub/wine/mime"
 )
 
 const textPacketDelimiter = 0x01

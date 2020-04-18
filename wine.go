@@ -1,8 +1,8 @@
 package wine
 
 import (
-	"github.com/gopub/log"
-	"github.com/gopub/wine/internal/path"
+	"github.com/golangpub/log"
+	"github.com/golangpub/wine/internal/path"
 )
 
 var logger *log.Logger

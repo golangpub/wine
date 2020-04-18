@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	pathpkg "github.com/gopub/wine/internal/path"
+	pathpkg "github.com/golangpub/wine/internal/path"
 )
 
 // Router implements routing function

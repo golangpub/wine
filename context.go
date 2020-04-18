@@ -2,7 +2,7 @@ package wine
 
 import (
 	"context"
-	"github.com/gopub/types"
+	"github.com/golangpub/types"
 	"html/template"
 	"net/http"
 )

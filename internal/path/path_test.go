@@ -3,7 +3,7 @@ package path_test
 import (
 	"testing"
 
-	"github.com/gopub/wine/internal/path"
+	"github.com/golangpub/wine/internal/path"
 	"github.com/stretchr/testify/assert"
 )
 

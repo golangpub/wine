@@ -9,8 +9,7 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/gopub/types"
-
+	"github.com/gopub/gox"
 	"github.com/gopub/log"
 	"github.com/gopub/wine"
 	"github.com/gopub/wine/mime"
@@ -26,27 +25,27 @@ type messageCoder interface {
 }
 
 type Result struct {
-	Error *types.Error `json:"error,omitempty"`
-	Data  interface{}  `json:"data"`
+	Error *gox.Error  `json:"error,omitempty"`
+	Data  interface{} `json:"data"`
 }
 
-func Data(data interface{}) wine.Responder {
+func Data(data interface{}) wine.Responsible {
 	val := &Result{
 		Data: data,
 	}
 	return wine.JSON(http.StatusOK, val)
 }
 
-func StatusData(status int, data interface{}) wine.Responder {
+func StatusData(status int, data interface{}) wine.Responsible {
 	val := &Result{
 		Data: data,
 	}
 	return wine.JSON(status, val)
 }
 
-func ErrorMessage(code int, message string) wine.Responder {
+func ErrorMessage(code int, message string) wine.Responsible {
 	val := &Result{
-		Error: types.NewError(code, message),
+		Error: gox.NewError(code, message),
 	}
 	status := code
 	for status >= 1000 {
@@ -55,34 +54,28 @@ func ErrorMessage(code int, message string) wine.Responder {
 	return wine.JSON(status, val)
 }
 
-func Error(err error) wine.Responder {
-	for {
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			break
-		}
-		err = u.Unwrap()
-	}
+func Error(err error) wine.Responsible {
+	err = gox.Cause(err)
 	if e, ok := err.(messageCoder); ok {
 		return ErrorMessage(e.Code(), e.Message())
 	} else if e, ok := err.(coder); ok {
 		return ErrorMessage(e.Code(), err.Error())
-	} else if e, ok := err.(*types.Error); ok {
+	} else if e, ok := err.(*gox.Error); ok {
 		return ErrorMessage(e.Code, e.Message)
-	} else if err == types.ErrNotExist {
+	} else if err == gox.ErrNotExist {
 		return ErrorMessage(http.StatusNotFound, err.Error())
 	} else {
 		return ErrorMessage(http.StatusInternalServerError, err.Error())
 	}
 }
 
-// ParseResult parse response at client side
+// ParseResponse parse response at client side
 func ParseResult(resp *http.Response, dataModel interface{}, useResultModel bool) error {
 	body, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
 		log.Errorf("Read response body: %v", err)
-		return types.NewError(StatusTransportFailed, fmt.Sprintf("read response body: %v", err))
+		return gox.NewError(StatusTransportFailed, fmt.Sprintf("read response body: %v", err))
 	}
 
 	ct := mime.GetContentType(resp.Header)
@@ -105,9 +98,9 @@ func ParseResult(resp *http.Response, dataModel interface{}, useResultModel bool
 				}
 				log.Errorf("Unmarshal response body: %s %v", bodyStr, err)
 				if resp.StatusCode >= http.StatusBadRequest {
-					return types.NewError(resp.StatusCode, bodyStr)
+					return gox.NewError(resp.StatusCode, bodyStr)
 				}
-				return types.NewError(StatusInvalidResponse, fmt.Sprintf("unmarshal json body: %v", err))
+				return gox.NewError(StatusInvalidResponse, fmt.Sprintf("unmarshal json body: %v", err))
 			}
 		}
 
@@ -117,22 +110,22 @@ func ParseResult(resp *http.Response, dataModel interface{}, useResultModel bool
 		return nil
 	case mime.Plain:
 		if resp.StatusCode >= http.StatusBadRequest {
-			return types.NewError(resp.StatusCode, string(body))
+			return gox.NewError(resp.StatusCode, string(body))
 		}
 		if dataModel == nil {
 			return nil
 		}
 		if len(body) == 0 {
-			return types.NewError(StatusInvalidResponse, "no data")
+			return gox.NewError(StatusInvalidResponse, "no data")
 		}
 		return assign(dataModel, body)
 	default:
 		if resp.StatusCode >= http.StatusBadRequest {
-			return types.NewError(resp.StatusCode, string(body))
+			return gox.NewError(resp.StatusCode, string(body))
 		}
 
 		if dataModel != nil {
-			return types.NewError(StatusInvalidResponse, "no data")
+			return gox.NewError(StatusInvalidResponse, "no data")
 		}
 		return nil
 	}
@@ -152,7 +145,7 @@ func assign(dataModel interface{}, body []byte) error {
 	if tu, ok := v.Interface().(encoding.TextUnmarshaler); ok {
 		err := tu.UnmarshalText(body)
 		if err != nil {
-			return types.NewError(StatusInvalidResponse, fmt.Sprintf("unmarshal text: %v", err))
+			return gox.NewError(StatusInvalidResponse, fmt.Sprintf("unmarshal text: %v", err))
 		}
 		return nil
 	}
@@ -167,7 +160,7 @@ func assign(dataModel interface{}, body []byte) error {
 		reflect.Int8:
 		i, err := strconv.ParseInt(string(body), 10, 64)
 		if err != nil {
-			return types.NewError(StatusInvalidResponse, fmt.Sprintf("parse int: %v", err))
+			return gox.NewError(StatusInvalidResponse, fmt.Sprintf("parse int: %v", err))
 		}
 		elem.SetInt(i)
 	case reflect.Uint64,
@@ -177,19 +170,19 @@ func assign(dataModel interface{}, body []byte) error {
 		reflect.Uint8:
 		i, err := strconv.ParseUint(string(body), 10, 64)
 		if err != nil {
-			return types.NewError(StatusInvalidResponse, fmt.Sprintf("parse uint: %v", err))
+			return gox.NewError(StatusInvalidResponse, fmt.Sprintf("parse uint: %v", err))
 		}
 		elem.SetUint(i)
 	case reflect.Float32, reflect.Float64:
 		i, err := strconv.ParseFloat(string(body), 64)
 		if err != nil {
-			return types.NewError(StatusInvalidResponse, fmt.Sprintf("parse float: %v", err))
+			return gox.NewError(StatusInvalidResponse, fmt.Sprintf("parse float: %v", err))
 		}
 		elem.SetFloat(i)
 	case reflect.Bool:
 		i, err := strconv.ParseBool(string(body))
 		if err != nil {
-			return types.NewError(StatusInvalidResponse, fmt.Sprintf("parse bool: %v", err))
+			return gox.NewError(StatusInvalidResponse, fmt.Sprintf("parse bool: %v", err))
 		}
 		elem.SetBool(i)
 	default:

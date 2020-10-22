@@ -9,34 +9,58 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gopub/gox"
 	"github.com/gopub/log"
 	"github.com/gopub/wine/mime"
 )
 
-// Responder interface is used by Wine server to write response to the client
-type Responder interface {
-	// Respond will be called to write status/body to http response writer
+const (
+	charsetSuffix = "; charset=utf-8"
+	ctPlain       = mime.Plain + charsetSuffix
+	ctHTML        = mime.HTML + charsetSuffix
+	ctJSON        = mime.JSON + charsetSuffix
+	ctXML         = mime.XML + charsetSuffix
+)
+
+// Responsible interface is used by Wine server to write response to the client
+type Responsible interface {
 	Respond(ctx context.Context, w http.ResponseWriter)
 }
 
-// ResponderFunc is a func that implements interface Responder
-type ResponderFunc func(ctx context.Context, w http.ResponseWriter)
+// ResponsibleFunc is a func that implements interface  Responsible
+type ResponsibleFunc func(ctx context.Context, w http.ResponseWriter)
 
-func (f ResponderFunc) Respond(ctx context.Context, w http.ResponseWriter) {
+// Respond will be called to write status/body to http response writer
+func (f ResponsibleFunc) Respond(ctx context.Context, w http.ResponseWriter) {
 	f(ctx, w)
 }
 
-// Response holds all the http response information
-// Value and headers except the status code can be modified before sent to the client
-type Response struct {
-	Responder
+// Response defines the http response interface
+type Response interface {
+	Responsible
+	Status() int
+	Header() http.Header
+	Value() interface{}
+	SetValue(v interface{})
+}
+
+type responseImpl struct {
 	status int
 	header http.Header
 	value  interface{}
 }
 
+// NewResponse creates a new response
+func NewResponse(status int, header http.Header, value interface{}) Response {
+	return &responseImpl{
+		status: status,
+		header: header,
+		value:  value,
+	}
+}
+
 // Respond writes header and body to response writer w
-func (r *Response) Respond(ctx context.Context, w http.ResponseWriter) {
+func (r *responseImpl) Respond(ctx context.Context, w http.ResponseWriter) {
 	body, ok := r.value.([]byte)
 	if !ok {
 		body = r.getBytes()
@@ -46,12 +70,12 @@ func (r *Response) Respond(ctx context.Context, w http.ResponseWriter) {
 		w.Header()[k] = v
 	}
 	w.WriteHeader(r.status)
-	if _, err := w.Write(body); err != nil {
+	if err := gox.WriteAll(w, body); err != nil {
 		log.Error(err)
 	}
 }
 
-func (r *Response) getBytes() []byte {
+func (r *responseImpl) getBytes() []byte {
 	if body, ok := r.value.([]byte); ok {
 		return body
 	}
@@ -84,29 +108,29 @@ func (r *Response) getBytes() []byte {
 	return nil
 }
 
-func (r *Response) Status() int {
+func (r *responseImpl) Status() int {
 	return r.status
 }
 
-func (r *Response) Header() http.Header {
+func (r *responseImpl) Header() http.Header {
 	return r.header
 }
 
-func (r *Response) Value() interface{} {
+func (r *responseImpl) Value() interface{} {
 	return r.value
 }
 
-func (r *Response) SetValue(v interface{}) {
+func (r *responseImpl) SetValue(v interface{}) {
 	r.value = v
 }
 
 // Status returns a response only with a status code
-func Status(status int) Responder {
+func Status(status int) Responsible {
 	return Text(status, http.StatusText(status))
 }
 
 // Redirect sends a redirect response
-func Redirect(location string, permanent bool) Responder {
+func Redirect(location string, permanent bool) Responsible {
 	header := make(http.Header)
 	header.Set("Location", location)
 	header.Set(mime.ContentType, mime.Plain)
@@ -117,17 +141,17 @@ func Redirect(location string, permanent bool) Responder {
 		status = http.StatusFound
 	}
 
-	return &Response{
+	return &responseImpl{
 		status: status,
 		header: header,
 	}
 }
 
 // Text sends a text response
-func Text(status int, text string) Responder {
+func Text(status int, text string) Responsible {
 	header := make(http.Header)
-	header.Set(mime.ContentType, mime.PlainUTF8)
-	return &Response{
+	header.Set(mime.ContentType, ctPlain)
+	return &responseImpl{
 		status: status,
 		header: header,
 		value:  text,
@@ -135,10 +159,10 @@ func Text(status int, text string) Responder {
 }
 
 // HTML creates a HTML response
-func HTML(status int, html string) Responder {
+func HTML(status int, html string) Responsible {
 	header := make(http.Header)
-	header.Set(mime.ContentType, mime.HtmlUTF8)
-	return &Response{
+	header.Set(mime.ContentType, ctHTML)
+	return &responseImpl{
 		status: status,
 		header: header,
 		value:  html,
@@ -146,20 +170,19 @@ func HTML(status int, html string) Responder {
 }
 
 // JSON creates a application/json response
-func JSON(status int, value interface{}) Responder {
+func JSON(status int, value interface{}) Responsible {
 	header := make(http.Header)
-	header.Set(mime.ContentType, mime.JsonUTF8)
-	return &Response{
+	header.Set(mime.ContentType, ctJSON)
+	return &responseImpl{
 		status: status,
 		header: header,
 		value:  value,
 	}
 }
 
-// StreamFile creates a application/octet-stream response
-func StreamFile(r io.Reader, name string) Responder {
-	return ResponderFunc(func(ctx context.Context, w http.ResponseWriter) {
-		logger := log.FromContext(ctx)
+// Stream creates a application/octet-stream response
+func StreamFile(r io.Reader, name string) Responsible {
+	return ResponsibleFunc(func(ctx context.Context, w http.ResponseWriter) {
 		w.Header().Set(mime.ContentType, mime.OctetStream)
 		if name != "" {
 			w.Header().Set(mime.ContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, name))
@@ -168,48 +191,47 @@ func StreamFile(r io.Reader, name string) Responder {
 		buf := make([]byte, size)
 		for {
 			n, err := r.Read(buf)
-			if n > 0 {
-				if _, wErr := w.Write(buf[:n]); wErr != nil {
-					logger.Errorf("Write: %v", wErr)
-					return
-				}
-			}
 			if err != nil {
-				logger.Errorf("Read: %v", err)
+				log.FromContext(ctx).Errorf("Read: %v", err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			if n < size {
+				break
+			}
+			gox.WriteAll(w, buf[:n])
 		}
 	})
 }
 
 // File creates a application/octet-stream response
-func File(b []byte, name string) Responder {
-	return ResponderFunc(func(ctx context.Context, w http.ResponseWriter) {
+func File(b []byte, name string) Responsible {
+	return ResponsibleFunc(func(ctx context.Context, w http.ResponseWriter) {
 		w.Header().Set(mime.ContentType, mime.OctetStream)
 		if name != "" {
 			w.Header().Set(mime.ContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, name))
 		}
-		if _, err := w.Write(b); err != nil {
-			log.FromContext(ctx).Errorf("write: %v", err)
+		err := gox.WriteAll(w, b)
+		if err != nil {
+			log.FromContext(ctx).Errorf("WriteAll: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 	})
 }
 
 // StaticFile serves static files
-func StaticFile(req *http.Request, filePath string) Responder {
-	return ResponderFunc(func(ctx context.Context, w http.ResponseWriter) {
+func StaticFile(req *http.Request, filePath string) Responsible {
+	return ResponsibleFunc(func(ctx context.Context, w http.ResponseWriter) {
 		http.ServeFile(w, req, filePath)
 	})
 }
 
 // TemplateHTML sends a HTML response. HTML page is rendered according to templateName and params
-func TemplateHTML(templates []*template.Template, templateName string, params interface{}) Responder {
-	return ResponderFunc(func(ctx context.Context, w http.ResponseWriter) {
+func TemplateHTML(templates []*template.Template, templateName string, params interface{}) Responsible {
+	return ResponsibleFunc(func(ctx context.Context, w http.ResponseWriter) {
 		for _, tmpl := range templates {
 			var err error
-			if templateName == "" {
+			if len(templateName) == 0 {
 				err = tmpl.Execute(w, params)
 			} else {
 				err = tmpl.ExecuteTemplate(w, templateName, params)
@@ -223,8 +245,8 @@ func TemplateHTML(templates []*template.Template, templateName string, params in
 }
 
 // Handle handles request with h
-func Handle(req *http.Request, h http.Handler) Responder {
-	return ResponderFunc(func(ctx context.Context, w http.ResponseWriter) {
+func Handle(req *http.Request, h http.Handler) Responsible {
+	return ResponsibleFunc(func(ctx context.Context, w http.ResponseWriter) {
 		h.ServeHTTP(w, req)
 	})
 }

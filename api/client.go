@@ -10,8 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 
-	"github.com/gopub/types"
-
+	"github.com/gopub/gox"
 	"github.com/gopub/log"
 	"github.com/gopub/wine/mime"
 )
@@ -25,34 +24,31 @@ type HeaderBuilder interface {
 }
 
 type Client struct {
-	client         *http.Client
-	header         http.Header
-	HeaderBuilder  HeaderBuilder
-	RequestLogging bool
-	UseResultModel bool
+	client              *http.Client
+	header              http.Header
+	HeaderBuilder       HeaderBuilder
+	RequestLogging      bool
+	ResultModelDisabled bool
 }
 
 var DefaultClient = NewClient(http.DefaultClient)
 
 func NewClient(client *http.Client) *Client {
 	return &Client{
-		client:         client,
-		header:         make(http.Header),
-		UseResultModel: true,
+		client: client,
+		header: make(http.Header),
 	}
 }
 
-// HTTPClient returns raw http client
 func (c *Client) HTTPClient() *http.Client {
 	return c.client
 }
 
-// Header returns shared http header
 func (c *Client) Header() http.Header {
 	return c.header
 }
 
-func (c *Client) injectHeader(req *http.Request) {
+func (c *Client) InjectHeader(req *http.Request) {
 	for k, vs := range c.header {
 		for _, v := range vs {
 			req.Header.Add(k, v)
@@ -63,7 +59,6 @@ func (c *Client) injectHeader(req *http.Request) {
 	}
 }
 
-// Get executes http get request created with endpoint and query
 func (c *Client) Get(ctx context.Context, endpoint string, query url.Values, result interface{}) error {
 	if query == nil {
 		return c.call(ctx, http.MethodGet, endpoint, nil, result)
@@ -83,7 +78,6 @@ func (c *Client) Get(ctx context.Context, endpoint string, query url.Values, res
 	return c.call(ctx, http.MethodGet, u.String(), nil, result)
 }
 
-// GetWithBody executes http get request created with endpoint and bodyParams which will be marshaled into json data
 func (c *Client) GetWithBody(ctx context.Context, endpoint string, bodyParams interface{}, result interface{}) error {
 	return c.call(ctx, http.MethodGet, endpoint, bodyParams, result)
 }
@@ -139,9 +133,8 @@ func (c *Client) call(ctx context.Context, method string, endpoint string, param
 	return c.Do(req, result)
 }
 
-// Do send http request 'req' and store response data into 'result'
 func (c *Client) Do(req *http.Request, result interface{}) error {
-	c.injectHeader(req)
+	c.InjectHeader(req)
 
 	if c.RequestLogging {
 		c.dumpRequest(req)
@@ -150,17 +143,17 @@ func (c *Client) Do(req *http.Request, result interface{}) error {
 	resp, err := c.client.Do(req)
 	if err != nil {
 		if err == context.DeadlineExceeded {
-			err = types.NewError(http.StatusRequestTimeout, err.Error())
+			err = gox.NewError(http.StatusRequestTimeout, err.Error())
 		} else {
-			if tr, ok := err.(timeoutReporter); ok && tr.Timeout() {
-				err = types.NewError(http.StatusRequestTimeout, err.Error())
+			if ep, ok := err.(timeoutReporter); ok && ep.Timeout() {
+				err = gox.NewError(http.StatusRequestTimeout, err.Error())
 			} else {
-				err = types.NewError(StatusTransportFailed, err.Error())
+				err = gox.NewError(StatusTransportFailed, err.Error())
 			}
 		}
 		return fmt.Errorf("do request: %w", err)
 	}
-	return ParseResult(resp, result, !c.UseResultModel)
+	return ParseResult(resp, result, !c.ResultModelDisabled)
 }
 
 func (c *Client) dumpRequest(req *http.Request) {

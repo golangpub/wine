@@ -2,9 +2,9 @@ package api
 
 import (
 	"encoding/json"
-	"net/http"
 
-	"github.com/gopub/types"
+	"github.com/gopub/gox"
+	"github.com/gopub/gox/runtime"
 	"github.com/gopub/wine"
 	"github.com/gopub/wine/mime"
 )
@@ -16,11 +16,12 @@ func ParseParams(req *wine.Request, params interface{}) error {
 	if err == nil {
 		_ = json.Unmarshal(data, params)
 	}
+	_ = runtime.CopyWithNamer(params, req.Params(), runtime.SnakeToCamelNamer)
 
 	if req.ContentType() == mime.JSON {
 		err := json.Unmarshal(req.Body(), params)
 		if err != nil {
-			return types.NewError(http.StatusBadRequest, "unmarshal: %v", err)
+			return gox.BadRequest("unmarshal: %v", err)
 		}
 	}
 	return nil

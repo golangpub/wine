@@ -1,18 +1,19 @@
 package wine
 
 import (
+	"context"
 	"html/template"
 )
 
 type templateManager struct {
-	templates []*template.Template
-	funcMap   template.FuncMap
+	templates     []*template.Template
+	templateFuncs template.FuncMap
 }
 
 func newTemplateManager() *templateManager {
 	return &templateManager{
-		templates: make([]*template.Template, 0),
-		funcMap:   make(template.FuncMap),
+		templates:     make([]*template.Template, 0),
+		templateFuncs: make(template.FuncMap),
 	}
 }
 
@@ -39,27 +40,37 @@ func (m *templateManager) AddTextTemplate(name string, texts ...string) {
 
 // AddTemplate adds a template
 func (m *templateManager) AddTemplate(tmpl *template.Template) {
-	if m.funcMap != nil {
-		tmpl.Funcs(m.funcMap)
+	if m.templateFuncs != nil {
+		tmpl.Funcs(m.templateFuncs)
 	}
 	m.templates = append(m.templates, tmpl)
 }
 
 // AddTemplateFuncMap adds template functions
 func (m *templateManager) AddTemplateFuncMap(funcMap template.FuncMap) {
-	if len(funcMap) == 0 {
-		return
+	if funcMap == nil {
+		logger.Panic("funcMap is nil")
 	}
 
-	if m.funcMap == nil {
-		m.funcMap = funcMap
+	if m.templateFuncs == nil {
+		m.templateFuncs = funcMap
 	} else {
 		for name, f := range funcMap {
-			m.funcMap[name] = f
+			m.templateFuncs[name] = f
 		}
 	}
 
 	for _, tmpl := range m.templates {
 		tmpl.Funcs(funcMap)
 	}
+}
+
+// GetTemplates returns templates in context
+func GetTemplates(ctx context.Context) []*template.Template {
+	v, _ := ctx.Value(CKTemplates).([]*template.Template)
+	return v
+}
+
+func withTemplate(ctx context.Context, templates []*template.Template) context.Context {
+	return context.WithValue(ctx, CKTemplates, templates)
 }

@@ -2,65 +2,64 @@ package path
 
 import (
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
-
-	"github.com/gopub/log"
 )
-
-var logger = log.Default()
-
-func SetLogger(l *log.Logger) {
-	logger = l
-}
 
 var (
-	compactSlashRegexp = regexp.MustCompile(`/{2,}`)
-	staticPathRegexp   = regexp.MustCompile(`^[^\\{\\}\\*]+$`)
-	wildcardPathRegexp = regexp.MustCompile(`^*[0-9a-zA-Z_\\-]*$`)
-	paramPathRegexp    = regexp.MustCompile(`^{([a-zA-Z][a-zA-Z_0-9]*|_[a-zA-Z_0-9]*[a-zA-Z0-9]+[a-zA-Z_0-9]*)}$`)
+	_compactSlashRegexp = regexp.MustCompile(`/{2,}`)
+	_staticPathRegexp   = regexp.MustCompile(`^[^\\{\\}\\*]+$`)
+	_wildcardPathRegexp = regexp.MustCompile(`^*[0-9a-zA-Z_\\-]*$`)
+	_paramPathRegexp    = regexp.MustCompile(`^{([a-zA-Z][a-zA-Z_0-9]*|_[a-zA-Z_0-9]*[a-zA-Z0-9]+[a-zA-Z_0-9]*)}$`)
 )
 
-func Normalize(p string) string {
-	p = compactSlashRegexp.ReplaceAllString(p, "/")
-	if p == "" {
-		return p
+func Normalize(path string) string {
+	path = _compactSlashRegexp.ReplaceAllString(path, "/")
+	if len(path) == 0 {
+		return path
 	}
 
-	if p[0] == '/' {
-		p = p[1:]
+	if path[0] == '/' {
+		path = path[1:]
 	}
 
-	if len(p) > 1 && p[len(p)-1] == '/' {
-		p = p[:len(p)-1]
+	if len(path) > 1 && path[len(path)-1] == '/' {
+		path = path[:len(path)-1]
 	}
-	return p
+	return path
 }
 
-func IsStatic(p string) bool {
-	return staticPathRegexp.MatchString(p)
+func IsStatic(path string) bool {
+	return _staticPathRegexp.MatchString(path)
 }
 
-func IsWildcard(p string) bool {
-	if p == "" {
+func IsWildcard(path string) bool {
+	if len(path) == 0 {
 		return false
 	}
-	return wildcardPathRegexp.MatchString(p)
+	return _wildcardPathRegexp.MatchString(path)
 }
 
-func IsParam(p string) bool {
-	if p == "" {
+func IsParam(path string) bool {
+	if len(path) == 0 {
 		return false
 	}
-	return paramPathRegexp.MatchString(p)
+	return _paramPathRegexp.MatchString(path)
 }
 
-func NormalizeRequestPath(req *http.Request) string {
-	p := req.RequestURI
-	i := strings.Index(p, "?")
+func Join(segment ...string) string {
+	res := path.Join(segment...)
+	res = strings.Replace(res, ":/", "://", 1)
+	return res
+}
+
+func NormalizedRequestPath(req *http.Request) string {
+	path := req.RequestURI
+	i := strings.Index(path, "?")
 	if i > 0 {
-		p = req.RequestURI[:i]
+		path = req.RequestURI[:i]
 	}
 
-	return Normalize(p)
+	return Normalize(path)
 }

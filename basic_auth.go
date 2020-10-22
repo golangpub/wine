@@ -9,26 +9,26 @@ import (
 	"github.com/gopub/log"
 )
 
-// NewBasicAuthHandler returns a basic auth interceptor
-func NewBasicAuthHandler(userToPassword map[string]string, realm string) HandlerFunc {
+// BasicAuth returns a basic auth interceptor
+func BasicAuth(userToPassword map[string]string, realm string) HandlerFunc {
 	if len(userToPassword) == 0 {
 		log.Panic("userToPassword is empty")
 	}
 
 	userToAuthInfo := make(map[string]string)
 	for user, password := range userToPassword {
-		if user == "" || password == "" {
+		if len(user) == 0 || len(password) == 0 {
 			log.Panic("Empty user or password")
 		}
 		info := user + ":" + password
 		userToAuthInfo[user] = "Basic " + base64.StdEncoding.EncodeToString([]byte(info))
 	}
 
-	return func(ctx context.Context, req *Request, next Invoker) Responder {
+	return func(ctx context.Context, req *Request, next Invoker) Responsible {
 		a := req.Authorization()
 		for user, info := range userToAuthInfo {
 			if info == a {
-				ctx = withBasicAuthUser(ctx, user)
+				ctx = context.WithValue(ctx, CKBasicAuthUser, user)
 				return next(ctx, req)
 			}
 		}
@@ -36,8 +36,8 @@ func NewBasicAuthHandler(userToPassword map[string]string, realm string) Handler
 	}
 }
 
-func RequireBasicAuth(realm string) Responder {
-	return ResponderFunc(func(ctx context.Context, w http.ResponseWriter) {
+func RequireBasicAuth(realm string) Responsible {
+	return ResponsibleFunc(func(ctx context.Context, w http.ResponseWriter) {
 		a := "Basic realm=" + strconv.Quote(realm)
 		w.Header().Set("WWW-Authenticate", a)
 		w.WriteHeader(http.StatusUnauthorized)

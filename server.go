@@ -5,57 +5,56 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"runtime/debug"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gopub/environ"
+	"github.com/gopub/wine/internal/request"
+
+	"github.com/gopub/gox"
+
 	"github.com/gopub/log"
-	"github.com/gopub/types"
-	"github.com/gopub/wine/internal/io"
+	pathutil "github.com/gopub/wine/internal/path"
 	"github.com/gopub/wine/internal/template"
 )
 
+var acceptEncodings = [2]string{"gzip", "deflate"}
+
+// ShortHandlerNameFlag means using short name format
+var ShortHandlerNameFlag = true
+
 const (
-	sysDatePath  = "_sys/date"
-	endpointPath = "_debug/endpoints"
-	echoPath     = "_debug/echo"
+	endpointPath = "_endpoints"
 	faviconPath  = "favicon.ico"
 )
 
-var reservedPaths = map[string]bool{
-	sysDatePath:  true,
-	endpointPath: true,
-	faviconPath:  true,
-	echoPath:     true,
-}
+// SessionName defines the session id name
+var SessionName = "wsessionid"
 
-const (
-	defaultSessionTTL = 30 * time.Minute
-	minSessionTTL     = 5 * time.Minute
-)
+// SessionTTL represents the session duration
+var SessionTTL = 30 * time.Minute
+
+const minSessionTTL = 5 * time.Minute
 
 // Server implements web server
 type Server struct {
 	*Router
 	*templateManager
-	server      *http.Server
-	sessionTTL  time.Duration
-	sessionName string
+	server *http.Server
 
-	maxRequestMemory   types.ByteUnit
-	Header             http.Header
-	Timeout            time.Duration
-	PreHandler         Handler
-	CompressionEnabled bool
-	Recovery           bool
+	Header       http.Header
+	Timeout      time.Duration //Timeout for each request, default value is 20s
+	ParamsParser ParamsParser
+	BeginHandler Handler
 
-	invokers struct {
-		favicon  *invokerList
-		notfound *invokerList
-		options  *invokerList
+	defaultHandler struct {
+		favicon  *handlerList
+		notfound *handlerList
+		options  *handlerList
 	}
+
+	logger *log.Logger
+
+	reservedPaths map[string]bool
 }
 
 // NewServer returns a server
@@ -66,22 +65,21 @@ func NewServer() *Server {
 	header.Set("Server", "Wine")
 
 	s := &Server{
-		sessionName:        environ.String("wine.session.name", "wsessionid"),
-		sessionTTL:         environ.Duration("wine.session.ttl", defaultSessionTTL),
-		maxRequestMemory:   types.ByteUnit(environ.SizeInBytes("wine.max_memory", int(8*types.MB))),
-		Router:             NewRouter(),
-		templateManager:    newTemplateManager(),
-		Header:             header,
-		Timeout:            environ.Duration("wine.timeout", 10*time.Second),
-		CompressionEnabled: environ.Bool("wine.compression", true),
-		Recovery:           environ.Bool("wine.recovery", true),
+		Router:          NewRouter(),
+		templateManager: newTemplateManager(),
+		Header:          header,
+		Timeout:         10 * time.Second,
+		ParamsParser:    request.NewParamsParser(8 * gox.MB),
+		logger:          logger,
 	}
-	if s.sessionTTL < minSessionTTL {
-		s.sessionTTL = minSessionTTL
+
+	s.defaultHandler.favicon = newHandlerList([]Handler{HandlerFunc(handleFavIcon)})
+	s.defaultHandler.notfound = newHandlerList([]Handler{HandlerFunc(handleNotFound)})
+	s.defaultHandler.options = newHandlerList([]Handler{HandlerFunc(s.handleOptions)})
+	s.reservedPaths = map[string]bool{
+		endpointPath: true,
+		faviconPath:  true,
 	}
-	s.invokers.favicon = newInvokerList(toHandlerList(HandlerFunc(handleFavIcon)))
-	s.invokers.notfound = newInvokerList(toHandlerList(HandlerFunc(handleNotFound)))
-	s.invokers.options = newInvokerList(toHandlerList(HandlerFunc(s.handleOptions)))
 	s.AddTemplateFuncMap(template.FuncMap)
 	return s
 }
@@ -92,34 +90,32 @@ func (s *Server) Run(addr string) {
 		logger.Fatalf("Server is running")
 	}
 
-	logger.Infof("Running at %s ...", addr)
+	logger.Info("Running at", addr, "...")
 	s.server = &http.Server{Addr: addr, Handler: s}
 	err := s.server.ListenAndServe()
 	if err != nil {
 		if errors.Is(err, http.ErrServerClosed) {
 			logger.Infof("Server closed")
 		} else {
-			logger.Fatalf("ListenAndServe: %v", err)
+			logger.Errorf("ListenAndServe: %v", err)
 		}
 	}
 }
 
 // RunTLS starts server with tls
-func (s *Server) RunTLS(addr, certFile, keyFile string) {
+func (s *Server) RunTLS(addr, certFile, keyFile string) error {
 	if s.server != nil {
 		logger.Panic("Server is running")
 	}
 
-	logger.Infof("Running at %s ...", addr)
+	s.Router.Print()
+	logger.Info("Running at", addr, "...")
 	s.server = &http.Server{Addr: addr, Handler: s}
 	err := s.server.ListenAndServeTLS(certFile, keyFile)
 	if err != nil {
-		if errors.Is(err, http.ErrServerClosed) {
-			logger.Infof("Server closed")
-		} else {
-			logger.Fatalf("ListenAndServe: %v", err)
-		}
+		s.server = nil
 	}
+	return err
 }
 
 // Shutdown stops server
@@ -127,90 +123,148 @@ func (s *Server) Shutdown() error {
 	return s.server.Shutdown(context.Background())
 }
 
+func (s *Server) logHTTP(rw http.ResponseWriter, req *http.Request, startAt time.Time) {
+	var statGetter statusGetter
+	if cw, ok := rw.(*compressedResponseWriter); ok {
+		cw.Close()
+		statGetter = cw.ResponseWriter.(statusGetter)
+	}
+
+	if statGetter == nil {
+		statGetter = rw.(statusGetter)
+	}
+
+	info := fmt.Sprintf("%s %s %s | %d %v",
+		req.RemoteAddr,
+		req.Method,
+		req.RequestURI,
+		statGetter.Status(),
+		time.Since(startAt))
+
+	if statGetter.Status() >= http.StatusBadRequest {
+		if statGetter.Status() != http.StatusUnauthorized {
+			s.logger.Errorf("%s | %v | %v", info, req.Header, req.PostForm)
+		} else {
+			s.logger.Errorf("%s | %v", info, req.Header)
+		}
+	} else {
+		s.logger.Info(info)
+	}
+}
+
 // ServeHTTP implements for http.Handler interface, which will handle each http request
 func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	if s.Recovery {
+	sid := s.setupSession(rw, req)
+	startAt := time.Now()
+	if logger.Level() > log.DebugLevel {
 		defer func() {
 			if e := recover(); e != nil {
-				logger.Errorf("%v: %+v\n", req, e)
-				logger.Errorf("\n%s\n", string(debug.Stack()))
+				logger.Error(e, req)
 			}
 		}()
 	}
-	rw = s.wrapResponseWriter(rw, req)
-	defer s.closeWriter(rw)
-	defer s.logRequest(req, rw, time.Now())
 
-	sid := s.initSession(rw, req)
-	ctx, cancel := s.setupContext(req.Context(), rw, sid)
+	// Add compression to responseWriter
+	rw = createCompressedWriter(newResponseWriter(rw), req)
+	defer s.logHTTP(rw, req, startAt)
+
+	path := pathutil.NormalizedRequestPath(req)
+	method := strings.ToUpper(req.Method)
+	handlers, pathParams := s.match(method, path)
+
+	if handlers.Empty() {
+		if method == http.MethodOptions {
+			handlers = s.defaultHandler.options
+		} else if path == faviconPath {
+			handlers = s.defaultHandler.favicon
+		} else {
+			handlers = s.defaultHandler.notfound
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(req.Context(), s.Timeout)
 	defer cancel()
 
-	parsedReq, err := parseRequest(req, s.maxRequestMemory)
+	parsedReq, err := newRequest(req, s.ParamsParser)
 	if err != nil {
-		logger.Errorf("Parse request: %v", err)
-		resp := Text(http.StatusBadRequest, fmt.Sprintf("Parse request: %v", err))
+		logger.Errorf("Parse failed: %v", err)
+		resp := Text(http.StatusBadRequest, fmt.Sprintf("Parse request failed: %v", err))
 		resp.Respond(ctx, rw)
 		return
 	}
-	parsedReq.params[s.sessionName] = sid
-	ctx = s.withRequestParams(ctx, parsedReq.params)
-	s.serve(ctx, parsedReq, rw)
-}
+	parsedReq.params.AddMapObj(pathParams)
+	parsedReq.params[SessionName] = sid
 
-func (s *Server) serve(ctx context.Context, req *Request, rw http.ResponseWriter) {
-	path := req.NormalizedPath()
-	method := strings.ToUpper(req.Request().Method)
-	var invokers *invokerList
-	handlers, params := s.match(method, path)
-	for k, v := range params {
-		req.params[k] = v
+	for k, v := range s.Header {
+		rw.Header()[k] = v
 	}
-	if handlers != nil && handlers.Len() > 0 {
-		invokers = newInvokerList(handlers)
+
+	ctx = withTemplate(ctx, s.templates)
+	ctx = withResponseWriter(ctx, rw)
+	var resp Responsible
+	if s.BeginHandler != nil && !s.reservedPaths[path] {
+		resp = s.BeginHandler.HandleRequest(ctx, parsedReq, handlers.Head().Invoke)
 	} else {
-		if method == http.MethodOptions {
-			invokers = s.invokers.options
-		} else if path == faviconPath {
-			invokers = s.invokers.favicon
-		} else {
-			invokers = s.invokers.notfound
-		}
+		resp = handlers.Head().Invoke(ctx, parsedReq)
 	}
-	var resp Responder
-	if s.PreHandler != nil && !reservedPaths[path] {
-		resp = s.PreHandler.HandleRequest(ctx, req, invokers.Invoke)
-	} else {
-		resp = invokers.Invoke(ctx, req)
-	}
+
 	if resp == nil {
-		resp = handleNotImplemented(ctx, req, nil)
+		resp = handleNotImplemented(ctx, parsedReq, nil)
 	}
 	resp.Respond(ctx, rw)
 }
 
-func (s *Server) wrapResponseWriter(rw http.ResponseWriter, req *http.Request) http.ResponseWriter {
-	for k, v := range s.Header {
-		rw.Header()[k] = v
-	}
-	w := io.NewResponseWriter(rw)
-	if !s.CompressionEnabled {
-		return w
+func createCompressedWriter(rw http.ResponseWriter, req *http.Request) http.ResponseWriter {
+	// Add compression to responseWriter
+	ae := req.Header.Get("Accept-Encoding")
+	for _, enc := range acceptEncodings {
+		if strings.Contains(ae, enc) {
+			rw.Header().Set("Content-Encoding", enc)
+			cw, err := newCompressedResponseWriter(rw, enc)
+			if err != nil {
+				log.Errorf("newCompressedResponseWriter failed: %v", err)
+			}
+			return cw
+		}
 	}
 
-	enc := req.Header.Get("Accept-Encoding")
-	cw, err := io.NewCompressResponseWriter(w, enc)
-	if err != nil {
-		log.Warnf("NewCompressResponseWriter: %v", err)
-		return w
-	}
-	return cw
+	return rw
 }
 
-func (s *Server) initSession(rw http.ResponseWriter, req *http.Request) string {
+func (s *Server) handleOptions(ctx context.Context, req *Request, next Invoker) Responsible {
+	path := pathutil.NormalizedRequestPath(req.request)
+	var allowedMethods []string
+	for routeMethod := range s.Router.methodTrees {
+		if handlers, _ := s.match(routeMethod, path); !handlers.Empty() {
+			allowedMethods = append(allowedMethods, routeMethod)
+		}
+	}
+
+	if len(allowedMethods) > 0 {
+		allowedMethods = append(allowedMethods, http.MethodOptions)
+	}
+
+	return ResponsibleFunc(func(ctx context.Context, rw http.ResponseWriter) {
+		if len(allowedMethods) > 0 {
+			val := []string{strings.Join(allowedMethods, ",")}
+			rw.Header()["Allow"] = val
+			rw.Header()["Access-Control-Allow-Methods"] = val
+			rw.WriteHeader(http.StatusNoContent)
+		} else {
+			rw.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
+func (s *Server) setupSession(rw http.ResponseWriter, req *http.Request) string {
+	if SessionName == "" {
+		return ""
+	}
+
 	var sid string
 	// Read cookie
 	for _, c := range req.Cookies() {
-		if c.Name == s.sessionName {
+		if c.Name == SessionName {
 			sid = c.Value
 			break
 		}
@@ -218,7 +272,7 @@ func (s *Server) initSession(rw http.ResponseWriter, req *http.Request) string {
 
 	// Read Header
 	if sid == "" {
-		lcName := strings.ToLower(s.sessionName)
+		lcName := strings.ToLower(SessionName)
 		for k, vs := range req.Header {
 			if strings.ToLower(k) == lcName {
 				if len(vs) > 0 {
@@ -231,88 +285,27 @@ func (s *Server) initSession(rw http.ResponseWriter, req *http.Request) string {
 
 	// Read url query
 	if sid == "" {
-		sid = req.URL.Query().Get(s.sessionName)
+		sid = req.URL.Query().Get(SessionName)
 	}
 
 	if sid == "" {
-		sid = strings.ReplaceAll(uuid.New().String(), "-", "")
+		sid = gox.UniqueID()
 	}
 
+	var expires time.Time
+	if SessionTTL < minSessionTTL {
+		expires = time.Now().Add(minSessionTTL)
+	} else {
+		expires = time.Now().Add(SessionTTL)
+	}
 	cookie := &http.Cookie{
-		Name:    s.sessionName,
+		Name:    SessionName,
 		Value:   sid,
-		Expires: time.Now().Add(s.sessionTTL),
+		Expires: expires,
 		Path:    "/",
 	}
 	http.SetCookie(rw, cookie)
 	// Write to Header in case cookie is disabled by some browsers
-	rw.Header().Set(s.sessionName, sid)
+	rw.Header().Set(SessionName, sid)
 	return sid
-}
-
-func (s *Server) setupContext(ctx context.Context, rw http.ResponseWriter, sid string) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
-	ctx = withTemplate(ctx, s.templates)
-	ctx = withResponseWriter(ctx, rw)
-	ctx = withSessionID(ctx, sid)
-	return ctx, cancel
-}
-
-func (s *Server) withRequestParams(ctx context.Context, params types.M) context.Context {
-	if loc, _ := types.NewPointFromString(params.String("loc")); loc != nil {
-		ctx = WithLocation(ctx, loc)
-	}
-	if deviceID := params.String("device_id"); deviceID != "" {
-		ctx = WithDeviceID(ctx, deviceID)
-	}
-	return ctx
-}
-
-func (s *Server) closeWriter(w http.ResponseWriter) {
-	if cw, ok := w.(*io.CompressResponseWriter); ok {
-		err := cw.Close()
-		if err != nil {
-			logger.Errorf("Close compressed response writer: %v", err)
-		}
-	}
-}
-
-func (s *Server) logRequest(req *http.Request, rw http.ResponseWriter, startAt time.Time) {
-	status := 0
-	if w, ok := rw.(*io.ResponseWriter); ok {
-		status = w.Status()
-	}
-	info := fmt.Sprintf("%s %s %s | %d %v",
-		req.RemoteAddr,
-		req.Method,
-		req.RequestURI,
-		status,
-		time.Since(startAt))
-	if status >= http.StatusBadRequest {
-		if status != http.StatusUnauthorized {
-			logger.Errorf("%s | %v | %v", info, req.Header, req.PostForm)
-		} else {
-			logger.Errorf("%s | %v", info, req.Header)
-		}
-	} else {
-		logger.Info(info)
-	}
-}
-
-func (s *Server) handleOptions(ctx context.Context, req *Request, next Invoker) Responder {
-	methods := s.matchMethods(req.NormalizedPath())
-	if len(methods) > 0 {
-		methods = append(methods, http.MethodOptions)
-	}
-
-	return ResponderFunc(func(ctx context.Context, rw http.ResponseWriter) {
-		if len(methods) > 0 {
-			joined := []string{strings.Join(methods, ",")}
-			rw.Header()["Allow"] = joined
-			rw.Header()["Access-Control-Allow-Methods"] = joined
-			rw.WriteHeader(http.StatusNoContent)
-		} else {
-			rw.WriteHeader(http.StatusNotFound)
-		}
-	})
 }

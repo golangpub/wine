@@ -1,7 +1,6 @@
 package wine
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"net/http"
@@ -10,66 +9,105 @@ import (
 	"sort"
 	"strings"
 
-	pathpkg "github.com/gopub/wine/internal/path"
+	"github.com/gopub/log"
+	pathutil "github.com/gopub/wine/internal/path"
 )
 
 // Router implements routing function
 type Router struct {
-	anyRoot      *pathpkg.Node // Root for any methods
-	methodToRoot map[string]*pathpkg.Node
-	basePath     string
-	handlers     []Handler
+	methodTrees map[string]*node
+	basePath    string
+	handlers    []Handler
 }
 
 // NewRouter new a Router
 func NewRouter() *Router {
-	r := &Router{
-		anyRoot:      pathpkg.NewEmptyNode(),
-		methodToRoot: make(map[string]*pathpkg.Node, 4),
-	}
-	r.bindSysHandlers()
+	r := &Router{}
+	r.methodTrees = make(map[string]*node, 4)
+	r.Get(endpointPath, r.listEndpoints)
 	return r
 }
 
-func (r *Router) bindSysHandlers() {
-	r.Get(endpointPath, r.listEndpoints)
-	r.Get(sysDatePath, handleDate)
-	r.Any(echoPath, handleEcho)
+type endpointInfo struct {
+	Method       string
+	Path         string
+	HandlerNames string
 }
 
-func (r *Router) clone() *Router {
-	nr := &Router{
-		anyRoot:      r.anyRoot,
-		methodToRoot: r.methodToRoot,
-		basePath:     r.basePath,
+type endpointInfoList []*endpointInfo
+
+func (l endpointInfoList) Len() int {
+	return len(l)
+}
+
+func (l endpointInfoList) Swap(i, j int) {
+	l[i], l[j] = l[j], l[i]
+}
+
+func (l endpointInfoList) Less(i, j int) bool {
+	return l[i].Path < l[j].Path
+}
+
+func (r *Router) listEndpoints(ctx context.Context, req *Request, next Invoker) Responsible {
+	endpoints := make(endpointInfoList, 0, 10)
+	maxLenOfPath := 0
+	for method, node := range r.methodTrees {
+		pl := node.Endpoints(method)
+		for _, p := range pl {
+			endpoints = append(endpoints, p)
+			if n := len(p.Path); n > maxLenOfPath {
+				maxLenOfPath = n
+			}
+		}
 	}
-	nr.handlers = make([]Handler, len(r.handlers))
-	copy(nr.handlers, r.handlers)
-	return nr
+	sort.Sort(endpoints)
+
+	b := new(strings.Builder)
+	for i, e := range endpoints {
+		format := fmt.Sprintf("%%3d. %%6s /%%-%ds %%s\n", maxLenOfPath)
+		line := fmt.Sprintf(format, i+1, e.Method, e.Path, e.HandlerNames)
+		b.WriteString(line)
+	}
+	return Text(http.StatusOK, b.String())
 }
 
 // Group returns a new router whose basePath is r.basePath+path
 func (r *Router) Group(path string) *Router {
 	if path == "/" {
-		logger.Panic(`Not allowed to create group "/"`)
+		logger.Panic("don't create default group \"/\"")
 	}
 
-	nr := r.clone()
+	nr := &Router{}
+	nr.methodTrees = r.methodTrees
+
 	// support empty path
 	if len(path) > 0 {
-		nr.basePath = pathpkg.Normalize(r.basePath + "/" + path)
+		nr.basePath = pathutil.Normalize(r.basePath + "/" + path)
 	}
+
+	nr.handlers = make([]Handler, len(r.handlers))
+	copy(nr.handlers, r.handlers)
 	return nr
 }
 
 // UseHandlers returns a new router with global handlers which will be bound with all new path patterns
 // This can be used to add interceptors
 func (r *Router) UseHandlers(handlers ...Handler) *Router {
-	nr := r.clone()
+	if len(handlers) == 0 {
+		return r
+	}
+
+	nr := &Router{
+		methodTrees: r.methodTrees,
+		basePath:    r.basePath,
+	}
+	nr.handlers = make([]Handler, len(r.handlers))
+	copy(nr.handlers, r.handlers)
+
 	for _, h := range handlers {
 		found := false
 		for _, rh := range nr.handlers {
-			if equal(h, rh) {
+			if reflect.TypeOf(rh).Comparable() && reflect.TypeOf(h).Comparable() && rh == h {
 				found = true
 				break
 			}
@@ -79,35 +117,30 @@ func (r *Router) UseHandlers(handlers ...Handler) *Router {
 			nr.handlers = append(nr.handlers, h)
 		}
 	}
+
 	return nr
 }
 
 // Use is similar with UseHandlers
-func (r *Router) Use(funcList ...HandlerFunc) *Router {
-	return r.UseHandlers(toHandlers(funcList...)...)
+func (r *Router) Use(funcs ...HandlerFunc) *Router {
+	if len(funcs) == 0 {
+		return r
+	}
+	return r.UseHandlers(convertToHandlers(funcs...)...)
 }
 
 // match finds handlers and parses path parameters according to method and path
-func (r *Router) match(method string, path string) (*list.List, map[string]string) {
+func (r *Router) match(method string, path string) (*handlerList, map[string]string) {
+	n := r.methodTrees[method]
+	if n == nil {
+		return nil, nil
+	}
+
 	segments := strings.Split(path, "/")
 	if segments[0] != "" {
 		segments = append([]string{""}, segments...)
 	}
-
-	root := r.methodToRoot[method]
-	if root == nil {
-		root = r.anyRoot
-	}
-
-	m, params := root.Match(segments...)
-	if m == nil && root != r.anyRoot {
-		m, params = r.anyRoot.Match(segments...)
-	}
-
-	if m == nil {
-		return nil, map[string]string{}
-	}
-
+	hl, params := n.matchPath(segments)
 	unescapedParams := make(map[string]string, len(params))
 	for k, v := range params {
 		uv, err := url.PathUnescape(v)
@@ -118,59 +151,98 @@ func (r *Router) match(method string, path string) (*list.List, map[string]strin
 			unescapedParams[k] = uv
 		}
 	}
-	return m.Handlers(), unescapedParams
-}
-
-func (r *Router) matchMethods(path string) []string {
-	var methods []string
-	for m := range r.methodToRoot {
-		if handlers, _ := r.match(m, path); handlers != nil && handlers.Len() > 0 {
-			methods = append(methods, m)
-		}
-	}
-	return methods
+	return hl, unescapedParams
 }
 
 // Bind binds method, path with handlers
-func (r *Router) Bind(method, path string, handlers ...Handler) {
+func (r *Router) Bind(method string, path string, handlers ...Handler) {
 	if path == "" {
-		logger.Panic("Empty path")
+		logger.Panic("invalid path")
 	}
 
-	if method == "" {
-		logger.Panic("Empty method")
+	if len(method) == 0 {
+		logger.Panic("invalid method")
 	}
 
 	if len(handlers) == 0 {
-		logger.Panic("No handlers")
+		logger.Panic("no handler")
 	}
 
 	method = strings.ToUpper(method)
-	root := r.getRoot(method)
-	hl := r.createHandlerList(handlers)
-	path = pathpkg.Normalize(r.basePath + "/" + path)
+	root := r.methodTrees[method]
+	if root == nil {
+		root = &node{}
+		root.t = staticNode
+		r.methodTrees[method] = root
+	}
+
+	hs := make([]Handler, len(r.handlers))
+	copy(hs, r.handlers)
+	hs = append(hs, handlers...)
+	hl := newHandlerList(hs)
+
+	path = pathutil.Normalize(r.basePath + "/" + path)
 	if path == "" {
-		if r.anyRoot.IsEndpoint() {
-			logger.Panicf("Conflict: ANY, %s", r.basePath)
-		} else if root.IsEndpoint() {
-			logger.Panicf("Conflict: %s, %s", method, r.basePath)
+		if root.handlers.Empty() {
+			root.handlers = hl
 		} else {
-			root.SetHandlers(hl)
+			root.Print(method, r.basePath)
+			panic("binding conflict: " + path)
 		}
 	} else {
-		nodeList := pathpkg.NewNodeList(path, hl)
-		if pair := r.anyRoot.Conflict(nodeList); pair != nil {
-			first := pair.First.(*pathpkg.Node).Path()
-			second := pair.Second.(*pathpkg.Node).Path()
-			logger.Panicf("Conflict: ANY %s, %s %s", first, method, second)
+		nodes := newNodeList(path, hl)
+		if !root.add(nodes) {
+			root.Print(method, r.basePath)
+			panic("binding conflict: " + path)
 		}
-		root.Add(nodeList)
+	}
+}
+
+// Unbind unbinds method, path
+func (r *Router) Unbind(method string, path string) {
+	if path == "" {
+		logger.Panic("invalid path")
+	}
+
+	if len(method) == 0 {
+		logger.Panic("invalid method")
+	}
+
+	method = strings.ToUpper(method)
+	root := r.methodTrees[method]
+	if root == nil {
+		root = &node{}
+		root.t = staticNode
+		r.methodTrees[method] = root
+	}
+
+	path = pathutil.Normalize(r.basePath + "/" + path)
+	if path == "" {
+		root.handlers = nil
+		return
+	}
+
+	nodes := newNodeList(path, nil)
+	if len(nodes) == 0 {
+		logger.Panic("node list is empty")
+	}
+
+	if nodes[0].path != "" {
+		emptyNode := &node{}
+		emptyNode.t = staticNode
+		nodes = append([]*node{emptyNode}, nodes...)
+	}
+
+	n := root.matchNodes(nodes)
+	if n != nil {
+		n.handlers = nil
+		log.With("method", method, "path", path).Info("succeeded")
 	}
 }
 
 // StaticFile binds path to a file
 func (r *Router) StaticFile(path, filePath string) {
-	r.Get(path, func(ctx context.Context, req *Request, next Invoker) Responder {
+	r.Get(path, func(ctx context.Context, req *Request, next Invoker) Responsible {
 		return StaticFile(req.request, filePath)
 	})
 }
@@ -182,8 +254,8 @@ func (r *Router) StaticDir(path, dirPath string) {
 
 // StaticFS binds path to an abstract file system
 func (r *Router) StaticFS(path string, fs http.FileSystem) {
-	prefix := pathpkg.Normalize(r.basePath + "/" + path)
-	if prefix == "" {
+	prefix := pathutil.Normalize(r.basePath + "/" + path)
+	if len(prefix) == 0 {
 		prefix = "/"
 	} else if prefix[0] != '/' {
 		prefix = "/" + prefix
@@ -193,7 +265,7 @@ func (r *Router) StaticFS(path string, fs http.FileSystem) {
 	if i > 0 {
 		prefix = prefix[:i]
 	} else {
-		path = pathpkg.Normalize(path + "/*")
+		path = pathutil.Normalize(path + "/*")
 	}
 
 	if prefix[len(prefix)-1] != '/' {
@@ -201,154 +273,67 @@ func (r *Router) StaticFS(path string, fs http.FileSystem) {
 	}
 
 	fileServer := http.StripPrefix(prefix, http.FileServer(fs))
-	r.Get(path, func(ctx context.Context, req *Request, next Invoker) Responder {
+	r.Get(path, func(ctx context.Context, req *Request, next Invoker) Responsible {
 		return Handle(req.request, fileServer)
 	})
 }
 
-// Any binds funcList to path with any(wildcard) method
-func (r *Router) Any(path string, funcList ...HandlerFunc) {
-	if path == "" {
-		logger.Panic("Empty path")
-	}
-	handlers := toHandlers(funcList...)
-	if len(handlers) == 0 {
-		logger.Panic("No handlers")
-	}
-
-	hl := r.createHandlerList(handlers)
-	path = pathpkg.Normalize(r.basePath + "/" + path)
-	if path == "" {
-		if r.anyRoot.IsEndpoint() {
-			logger.Panicf("Conflict: ANY, %s", r.basePath)
-		} else {
-			r.anyRoot.SetHandlers(hl)
-		}
-	} else {
-		nodeList := pathpkg.NewNodeList(path, hl)
-		r.anyRoot.Add(nodeList)
-	}
+// Get binds funcs to path with GET method
+func (r *Router) Get(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodGet, path, convertToHandlers(funcs...)...)
 }
 
-// Get binds funcList to path with GET method
-func (r *Router) Get(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodGet, path, toHandlers(funcList...)...)
+// Post binds funcs to path with POST method
+func (r *Router) Post(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodPost, path, convertToHandlers(funcs...)...)
 }
 
-// Post binds funcList to path with POST method
-func (r *Router) Post(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodPost, path, toHandlers(funcList...)...)
+// Put binds funcs to path with PUT method
+func (r *Router) Put(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodPut, path, convertToHandlers(funcs...)...)
 }
 
-// Put binds funcList to path with PUT method
-func (r *Router) Put(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodPut, path, toHandlers(funcList...)...)
+// Patch binds funcs to path with PATCH method
+func (r *Router) Patch(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodPatch, path, convertToHandlers(funcs...)...)
 }
 
-// Patch binds funcList to path with PATCH method
-func (r *Router) Patch(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodPatch, path, toHandlers(funcList...)...)
+// Delete binds funcs to path with DELETE method
+func (r *Router) Delete(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodDelete, path, convertToHandlers(funcs...)...)
 }
 
-// Delete binds funcList to path with DELETE method
-func (r *Router) Delete(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodDelete, path, toHandlers(funcList...)...)
+// Options binds funcs to path with OPTIONS method
+func (r *Router) Options(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodOptions, path, convertToHandlers(funcs...)...)
 }
 
-// Options binds funcList to path with OPTIONS method
-func (r *Router) Options(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodOptions, path, toHandlers(funcList...)...)
+// Head binds funcs to path with HEAD method
+func (r *Router) Head(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodHead, path, convertToHandlers(funcs...)...)
 }
 
-// Head binds funcList to path with HEAD method
-func (r *Router) Head(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodHead, path, toHandlers(funcList...)...)
+// Trace binds funcs to path with TRACE method
+func (r *Router) Trace(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodTrace, path, convertToHandlers(funcs...)...)
 }
 
-// Trace binds funcList to path with TRACE method
-func (r *Router) Trace(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodTrace, path, toHandlers(funcList...)...)
-}
-
-// Connect binds funcList to path with CONNECT method
-func (r *Router) Connect(path string, funcList ...HandlerFunc) {
-	r.Bind(http.MethodConnect, path, toHandlers(funcList...)...)
-}
-
-func (r *Router) getRoot(method string) *pathpkg.Node {
-	root := r.methodToRoot[method]
-	if root == nil {
-		root = pathpkg.NewEmptyNode()
-		r.methodToRoot[method] = root
-	}
-	return root
-}
-
-func (r *Router) createHandlerList(handlers []Handler) *list.List {
-	l := list.New()
-	for _, h := range r.handlers {
-		l.PushBack(h)
-	}
-	for _, h := range handlers {
-		l.PushBack(h)
-	}
-	return l
+// Connect binds funcs to path with CONNECT method
+func (r *Router) Connect(path string, funcs ...HandlerFunc) {
+	r.Bind(http.MethodConnect, path, convertToHandlers(funcs...)...)
 }
 
 // Print prints all path trees
 func (r *Router) Print() {
-	for method, root := range r.methodToRoot {
-		nodes := root.ListEndpoints()
-		for _, n := range nodes {
-			logger.Infof("%-5s %s\t%s", method, n.Path(), handlerListToString(n.Handlers()))
-		}
+	for m, n := range r.methodTrees {
+		n.Print(m, "/")
 	}
 }
 
-func (r *Router) listEndpoints(ctx context.Context, req *Request, next Invoker) Responder {
-	l := make(sortableNodeList, 0, 10)
-	maxLenOfPath := 0
-	nodeToMethod := make(map[*pathpkg.Node]string, 10)
-	for method, root := range r.methodToRoot {
-		for _, node := range root.ListEndpoints() {
-			l = append(l, node)
-			nodeToMethod[node] = method
-			if n := len(node.Path()); n > maxLenOfPath {
-				maxLenOfPath = n
-			}
-		}
+func convertToHandlers(funcs ...HandlerFunc) []Handler {
+	handlers := make([]Handler, len(funcs))
+	for i, h := range funcs {
+		handlers[i] = h
 	}
-	for _, node := range r.anyRoot.ListEndpoints() {
-		l = append(l, node)
-		nodeToMethod[node] = "*"
-		if n := len(node.Path()); n > maxLenOfPath {
-			maxLenOfPath = n
-		}
-	}
-	sort.Sort(l)
-	b := new(strings.Builder)
-	for i, n := range l {
-		format := fmt.Sprintf("%%3d. %%6s /%%-%ds %%s\n", maxLenOfPath)
-		line := fmt.Sprintf(format, i+1, nodeToMethod[n], n.Path(), handlerListToString(n.Handlers()))
-		b.WriteString(line)
-	}
-	return Text(http.StatusOK, b.String())
-}
-
-type sortableNodeList []*pathpkg.Node
-
-func (l sortableNodeList) Len() int {
-	return len(l)
-}
-
-func (l sortableNodeList) Swap(i, j int) {
-	l[i], l[j] = l[j], l[i]
-}
-
-func (l sortableNodeList) Less(i, j int) bool {
-	return strings.Compare(l[i].Path(), l[j].Path()) < 0
-}
-
-func equal(v1, v2 interface{}) bool {
-	return reflect.TypeOf(v1).Comparable() && reflect.TypeOf(v2).Comparable() && v1 == v2
+	return handlers
 }

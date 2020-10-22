@@ -15,7 +15,7 @@ Create ./hello.go
         
         func main() {
         	s := wine.NewServer()
-        	s.Get("/hello", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder {
+        	s.Get("/hello", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible {
         		return wine.Text("Hello, Wine!")
         	})
         	s.Run(":8000")
@@ -30,16 +30,16 @@ Run and test:
 ## JSON Rendering
 
         s := wine.NewServer()
-        s.Get("/time", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder {
+        s.Get("/time", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible {
         	return wine.JSON(map[string]interface{}{"time":time.Now().Unix()})
         })
         s.Run(":8000")
 
 ## Parameters
-Request.Params() returns all parameters from URL query, post form, cookies, and custom header fields.
+Request.Parameters contains all request parameters (query/body/header).
 
         s := wine.NewServer()
-        s.Post("feedback", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder {
+        s.Post("feedback", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible {
             text := req.Params().String("text")
             email := req.Params().String("email")
             return wine.Text("Feedback:" + text + " from " + email)
@@ -61,31 +61,32 @@ Path parameters are also supported in order to provide elegant RESTful apis.
 Single parameter in one segment:
 <pre>
     s := wine.NewServer() 
-    s.Get("/items/<b>{id}</b>", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder {
+    s.Get("/items/<b>{id}</b>", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible {
         id := req.Params().String("id")
         return wine.Text("item id: " + id)
     }) 
     s.Run(":8000")
 </pre>
        
-## Use Interceptor
-Intercept and preprocess requests  
+## Use Middlewares
+Use middlewares to intercept and preprocess requests  
 
+Custom middleware
 <pre>
-    func Log(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder {
+    func Logger(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible {
     	st := time.Now()  
     	//pass request to the next handler
     	<b>result := next(ctx, request)</b>
     	cost := float32((time.Since(st) / time.Microsecond)) / 1000.0
-    	req := request.Request()
+    	req := return wine.Request()
     	log.Printf("%.3fms %s %s", cost, req.Method, req.RequestURI)
     	return result
     } <br/>
     func main() {
     	s := wine.NewServer(nil) 
-    	//Log every request
-    	<b>r := s.Use(Log)</b> 
-    	r.Get("/hello", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder {
+    	//Use middleware Logger
+    	<b>s.Use(Logger)</b> 
+    	s.Get("/hello", func(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible {
     		return wine.Text("Hello, Wine!")
         })
         s.Run(":8000")
@@ -93,7 +94,7 @@ Intercept and preprocess requests
 </pre>
 ## Grouping Route
 <pre>  
-    func CheckSessionID(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder {
+    func CheckSessionID(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible {
     	sid := req.Params().String("sid")
     	//check sid
     	if len(sid) == 0 {
@@ -103,23 +104,25 @@ Intercept and preprocess requests
     	}
     }
     
-    func GetUserProfile(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder  {
+    func GetUserProfile(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible  {
     	//...
     }
     
-    func GetUserFriends(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder  {
+    func GetUserFriends(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible  {
     	//...
     }
     
-    func GetServerTime(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responder  {
+    func GetServerTime(ctx context.Context, req *wine.Request, next wine.Invoker) wine.Responsible  {
     	//...
     }
     
     func main() {
     	s := wine.NewServer()
     
-    	//Create "accounts" group and add interceptor CheckSessionID
-    	<b>g := s.Group("accounts").Use(CheckSessionID)</b>
+    	//Create "accounts" group
+    	<b>g := s.Group("accounts")</b>
+    	//Use CheckSessionID to process all requests in this route group
+    	<b>g.Use(CheckSessionID)</b>
     	g.Get("{user_id}/profile", GetUserProfile)
     	g.Get("{user_id}/friends/{page}/{size}", GetUserFriends)
     
@@ -136,11 +139,11 @@ Run it:
     GET   /accounts/{user_id}/profile/    main.CheckSessionID, main.GetUserProfile
 
 
-## Auth
+## Basic Auth
 It's easy to turn on basic auth.
 
     s := wine.NewServer()
-	s.Use(wine.NewBasicAuthHandler(map[string]string{
+	s.Use(wine.BasicAuth(map[string]string{
 		"admin": "123",
 		"tom":   "456",
 	}, ""))

@@ -2,20 +2,18 @@ package wine
 
 import (
 	"encoding/base64"
-	"fmt"
 	"net/http"
 	"strings"
 
-	"github.com/gopub/types"
-	"github.com/gopub/wine/internal/io"
-	"github.com/gopub/wine/internal/path"
+	"github.com/gopub/gox"
+	"github.com/gopub/wine/internal/request"
 	"github.com/gopub/wine/mime"
 )
 
 // Request is a wrapper of http.Request, aims to provide more convenient interface
 type Request struct {
 	request     *http.Request
-	params      types.M
+	params      gox.M
 	body        []byte
 	contentType string
 }
@@ -26,7 +24,7 @@ func (r *Request) Request() *http.Request {
 }
 
 // Params returns request parameters
-func (r *Request) Params() types.M {
+func (r *Request) Params() gox.M {
 	return r.params
 }
 
@@ -40,6 +38,11 @@ func (r *Request) ContentType() string {
 	return r.contentType
 }
 
+// SessionID returns request's session id
+func (r *Request) SessionID() string {
+	return r.params.String(SessionName)
+}
+
 // Authorization returns request's Authorization in header
 func (r *Request) Authorization() string {
 	return r.request.Header.Get("Authorization")
@@ -48,28 +51,28 @@ func (r *Request) Authorization() string {
 // Bearer returns bearer token in header
 func (r *Request) Bearer() string {
 	s := r.Authorization()
-	l := strings.Split(s, " ")
-	if len(l) != 2 {
+	strs := strings.Split(s, " ")
+	if len(strs) != 2 {
 		return ""
 	}
-	if l[0] == "Bearer" {
-		return l[1]
+	if strs[0] == "Bearer" {
+		return strs[1]
 	}
 	return ""
 }
 
 func (r *Request) BasicAccount() (user string, password string) {
 	s := r.Authorization()
-	l := strings.Split(s, " ")
-	if len(l) != 2 {
+	strs := strings.Split(s, " ")
+	if len(strs) != 2 {
 		return
 	}
-	if l[0] != "Basic" {
+	if strs[0] != "Basic" {
 		return
 	}
-	b, err := base64.StdEncoding.DecodeString(l[1])
+	b, err := base64.StdEncoding.DecodeString(strs[1])
 	if err != nil {
-		logger.Errorf("Decode base64 string %s: %v", l[1], err)
+		logger.Errorf("Decode base64 string %s: %v", strs[1], err)
 		return
 	}
 	userAndPass := strings.Split(string(b), ":")
@@ -79,14 +82,14 @@ func (r *Request) BasicAccount() (user string, password string) {
 	return userAndPass[0], userAndPass[1]
 }
 
-func (r *Request) NormalizedPath() string {
-	return path.NormalizeRequestPath(r.request)
-}
+func newRequest(r *http.Request, parser ParamsParser) (*Request, error) {
+	if parser == nil {
+		parser = request.NewParamsParser(8 * gox.MB)
+	}
 
-func parseRequest(r *http.Request, maxMem types.ByteUnit) (*Request, error) {
-	params, body, err := io.ReadRequest(r, maxMem)
+	params, body, err := parser.Parse(r)
 	if err != nil {
-		return nil, fmt.Errorf("read request: %w", err)
+		return nil, err
 	}
 	return &Request{
 		request:     r,
@@ -94,4 +97,9 @@ func parseRequest(r *http.Request, maxMem types.ByteUnit) (*Request, error) {
 		body:        body,
 		contentType: mime.GetContentType(r.Header),
 	}, nil
+}
+
+// ParamsParser interface is used by Wine server to parse parameters from http request
+type ParamsParser interface {
+	Parse(req *http.Request) (gox.M, []byte, error)
 }
